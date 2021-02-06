@@ -11,7 +11,6 @@ import subprocess
 from time import sleep
 from datetime import datetime, timedelta, time
 
-appKey = "GeURoY46Cj1MN8i4qC1nHrtkHiVyFG9o"
 appKey = "I8U8uUExhEzXtPGxITMijwu2A5bgBf1X"
 scope = "smartWrite"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
