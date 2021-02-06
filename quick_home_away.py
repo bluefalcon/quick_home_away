@@ -1,19 +1,23 @@
-#!/usr/bin/python
+#! /usr/bin/env python3
 
 from argparse import ArgumentParser
 import json
+import logging
+import pprint
 import requests
 import sys
 import shelve
-from pprint import pprint
+import subprocess
 from time import sleep
 from datetime import datetime, timedelta, time
 
+appKey = "GeURoY46Cj1MN8i4qC1nHrtkHiVyFG9o"
 appKey = "I8U8uUExhEzXtPGxITMijwu2A5bgBf1X"
 scope = "smartWrite"
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
+logger = logging.getLogger("quick_home_away")
+logging.getLogger('urllib3').setLevel(logging.WARNING)
 
-def log( *args ):
-    print datetime.now().strftime( "%Y-%m-%d %H:%M" ), " ".join( map( str, args ) )
 
 # Hack to be compatible with wildly different versions of the requests module.
 def maybeCall( var ):
@@ -29,8 +33,11 @@ class EcobeeApplication( object ):
         self.homeDecayMinutes = 15
         # Map of thermostat ID to the last revision seen.
         self.lastSeen = {}
+        self.ping_addrs = []
 
     def updateAuthentication( self, response ):
+        if not response.ok:
+            logger.error("Error updating authentication: %s - %s", maybeCall(response.status_code), maybeCall(response.text))
         assert response.ok
         result = maybeCall( response.json )
 
@@ -38,7 +45,7 @@ class EcobeeApplication( object ):
         self.config[ "token_type" ] = result[ "token_type" ]
         self.config[ "refresh_token" ] = result[ "refresh_token" ]
         self.config[ "authentication_expiration" ] = datetime.now() + \
-                timedelta( 0, 60 * int( result[ "expires_in" ] ) )
+                timedelta( 0, int( result[ "expires_in" ] ) )
 
     def install( self ):
         r = requests.get(
@@ -47,33 +54,33 @@ class EcobeeApplication( object ):
         assert r.ok
         result = maybeCall( r.json )
         authorizationToken = result[ 'code' ]
-        print "Please log onto the ecobee web portal, log in, select the menu "
-        print "item in the top right (3 lines), and select MY APPS."
-        print "Next, click Add Application and enter the following "
-        print "authorization code:", result[ 'ecobeePin' ]
-        print "Then follow the prompts to add the Quick Home/Away app."
-        print "You have %d minutes." % result[ 'expires_in' ]
-        print
-        print "Hit enter when done:",
-        raw_input()
+        print("Please log onto the ecobee web portal, log in, select the menu ")
+        print("item in the top right (3 lines), and select MY APPS.")
+        print("Next, click Add Application and enter the following ")
+        print("authorization code:", result[ 'ecobeePin' ])
+        print("Then follow the prompts to add the Quick Home/Away app.")
+        print("You have %d minutes." % result[ 'expires_in' ])
+        print()
+        print("Hit enter when done:", end=' ')
+        input()
 
         r = requests.post(
                 "https://api.ecobee.com/token?grant_type=ecobeePin&code=%s&client_id=%s"
                 % ( authorizationToken, appKey ) )
         self.updateAuthentication( r )
 
-        print "Installation is complete. Now run this script without any "
-        print "arguments to control your thermostat."
+        print("Installation is complete. Now run this script without any ")
+        print("arguments to control your thermostat.")
 
     def maybeRefreshAuthentication( self ):
         if "authentication_expiration" in self.config and \
                 datetime.now() + timedelta( 0, 60 ) < self.config[ "authentication_expiration" ]:
             return
         if 'refresh_token' not in self.config:
-            print "We don't have a refresh_token!"
-            print "Run '%s --install' to get one." % sys.argv[ 0 ]
+            print("We don't have a refresh_token!")
+            print("Run '%s --install' to get one." % sys.argv[ 0 ])
             sys.exit( 1 )
-        log( "Refreshing authentication." )
+        logger.info("Refreshing authentication.")
         r = requests.post(
                 "https://api.ecobee.com/token?grant_type=refresh_token&code=%s&client_id=%s"
                 % ( self.config[ 'refresh_token' ], appKey ) )
@@ -89,11 +96,11 @@ class EcobeeApplication( object ):
                     'Authorization': "%s %s" % ( self.config[ "token_type" ],
                         self.config[ "access_token" ] ) }
                 )
+        self.checkResponse(r)
         try:
             return maybeCall( r.json )
         except ValueError:
-            log( "Couldn't decode:" )
-            log( r.text )
+            logger.exception("Couldn't decode: %s", r.text)
             raise
 
     def post( self, call, args ):
@@ -106,10 +113,17 @@ class EcobeeApplication( object ):
                     'Authorization': "%s %s" % ( self.config[ "token_type" ],
                         self.config[ "access_token" ] ) }
                 )
+        self.checkResponse(r)
         if not r.ok:
-            log( r.text )
+            logger.error("post error: %s", r.text)
         assert r.ok
         return maybeCall( r.json )
+
+    def checkResponse( self, r ):
+        if r.status_code == requests.codes.unauthorized:
+            logger.error("Unauthorized - Clearing refresh token. Response: %s", r.text)
+            self.config[ "authentication_expiration" ] = None
+            raise ValueError("authentication is expired")
 
     def thermostatSummary( self ):
         return self.get( "thermostatSummary", {
@@ -154,8 +168,7 @@ class EcobeeApplication( object ):
         summary = self.thermostatSummary()
         updated = []
         if 'revisionList' not in summary:
-            log( "WARNING: Couldn't find revisionList in the following summary object:" )
-            pprint( summary )
+            logger.warning("Couldn't find revisionList in the following summary object: %s", pprint.pformat(summary) )
             return []
 
         for revision in summary[ 'revisionList' ]:
@@ -170,7 +183,7 @@ class EcobeeApplication( object ):
 
     def setHold( self, thermostatId, thermostatTime, climate, minutes ):
         end = thermostatTime + timedelta( 0, minutes * 60 )
-        log( "setHold %s from %s until %s" % ( climate, thermostatTime, end ) )
+        logger.info("setHold %s from %s until %s", climate, thermostatTime, end )
         self.post( "thermostat",
                 {
                     "selection": {
@@ -202,6 +215,16 @@ class EcobeeApplication( object ):
         return identifiers
 
 class QuickHomeAway( EcobeeApplication ):
+    def ping (self, address):
+        ping_command = "ping -c 2 -n -W 4 %s" %(address,)
+        child = subprocess.Popen(ping_command,
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE,
+                                   shell=True)
+        (output, error) = child.communicate()
+        logger.debug("ping %s: %s, %s, %s", address, child.returncode, error, output)
+        return child.returncode == 0
+
     def sensorReport( self, thermostatId ):
         result = self.runtimeReport( thermostatId, includeSensors=True )[
                 'sensorList' ][ 0 ]
@@ -216,7 +239,7 @@ class QuickHomeAway( EcobeeApplication ):
                     parts[ columns[ "time" ] ] )
             date = datetime.strptime( dateString, "%Y-%m-%d %H:%M:%S" )
             rowData = {}
-            for sensor in sensors.itervalues():
+            for sensor in sensors.values():
                 value = parts[ columns[ sensor[ "sensorId" ] ] ]
                 if value in ( "", "null" ):
                     continue
@@ -231,36 +254,46 @@ class QuickHomeAway( EcobeeApplication ):
             return
         thermostat = self.thermostat( updated, includeEvents=True,
                 includeProgram=True )
+        ping_addr_found = None
+        if self.ping_addrs:
+            for addr in self.ping_addrs:
+                if self.ping(addr):
+                    ping_addr_found = addr
+                    break
         for identifier in updated:
             data = self.sensorReport( identifier )
             sensorClimate = 'away'
             for date, sensorData in data[ -3: ]:
                 occupied = sum( sensorData[ 'occupancy' ] )
+                if not occupied and ping_addr_found:
+                    occupied += 1
+
                 if occupied:
                     sensorClimate = 'home'
-                log( date.strftime( "%H:%M" ),
+                logger.info("%s - %s%s", date.strftime( "%H:%M" ),
                         ", ".join( "%s: %s" % ( k, v )
-                            for k, v in sensorData.iteritems() ) )
+                            for k, v in sensorData.items() ),
+                        ", ping address found: %s" % (ping_addr_found) if self.ping_addrs else "")
 
-            log( "Sensors say we're %s." % sensorClimate )
+            logger.info( "Sensors say we're %s.", sensorClimate)
 
             runningClimateRef = None
             for event in thermostat[ identifier ][ 'events' ]:
                 if event[ 'running' ]:
                     runningClimateRef = event[ 'holdClimateRef' ]
-                    log( event[ 'type' ], event[ 'holdClimateRef' ],
-                            "until", event[ 'endTime' ] )
+                    logger.info("%s %s until %s",  event[ 'type' ], event[ 'holdClimateRef' ],
+                            event[ 'endTime' ] )
 
             if runningClimateRef is None:
                 # Maybe we're on the regular schedule
                 runningClimateRef = thermostat[ identifier ][ 'program' ][
                         'currentClimateRef' ]
-                log( "Regularly scheduled climate:", runningClimateRef )
+                logger.info("Regularly scheduled climate: %s", runningClimateRef )
 
             if runningClimateRef in ( 'home', 'away' ):
                 if runningClimateRef != sensorClimate:
-                    log( "Change climate from %s to %s" % ( runningClimateRef,
-                            sensorClimate ) )
+                    logger.info("Change climate from %s to %s",  runningClimateRef,
+                            sensorClimate)
                     thermostatTime = datetime.strptime(
                           thermostat[ identifier ][ 'thermostatTime' ],
                           "%Y-%m-%d %H:%M:%S" )
@@ -287,6 +320,8 @@ class QuickHomeAway( EcobeeApplication ):
         parser.add_argument( "--install", action="store_true",
                 help="Authorize this application to access your thermostat. "
                 "Use this the first time you run the application." )
+        parser.add_argument( "--ping", nargs='+', type=str,
+                help="In addition to the sensor status, also ping this network address to check for presence.")
         parser.add_argument( "minutes", nargs='?', type=int,
                 help="Run this many MINUTES and then exit. If this argument "
                 "is omitted, run forever." )
@@ -296,17 +331,19 @@ class QuickHomeAway( EcobeeApplication ):
             self.install()
             return
 
+        if args.ping:
+            self.ping_addrs = args.ping
+            logger.info("Also pinging the following addresses to check for presence: %s", args.ping)
         if not args.minutes is None:
             endTime = datetime.now() + timedelta( 0, args.minutes * 60 )
-            log( "Run until %s." % endTime )
+            logger.info("Run until %s.",  endTime)
 
         while True:
             nowTime = datetime.now().time()
             try:
                 self.aggressiveAway()
             except Exception:
-                import traceback
-                traceback.print_exc()
+                logger.exception("Caught error")
             if not args.minutes is None and datetime.now() > endTime:
                 break
             sleep( 60 - datetime.now().second )
@@ -314,3 +351,4 @@ class QuickHomeAway( EcobeeApplication ):
 if __name__ == '__main__':
     app = QuickHomeAway()
     sys.exit( app.main() )
+

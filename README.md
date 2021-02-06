@@ -36,14 +36,17 @@ translates to less time spent heating the house overall.
 
 ## Getting Started
 
-Run "quick_home_away.py --install" and follow the prompts.
-
-Now run quick_home_away.py with no arguments to put it in action.
+* Install the requirements by running: `pip install -r requirements.txt`
+* Update the `appKey` value in quick_home_away.py
+* Run "quick_home_away.py --install" and follow the prompts.
+* Now run `quick_home_away.py` with no arguments to put it in action, or 
+  `quick_home_away.py --ping IP_ADDRESS_1 IP_ADDRESS_2` to also ping 
+  local IP addresses (such as cell phones) as a test for presence.
 
 ## Compatibility
 
 I developed this script under Linux, but it should work anywhere that Python
-2.7 is available.
+3 is available.
 
 ## Security
 
