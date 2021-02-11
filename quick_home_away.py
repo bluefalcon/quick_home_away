@@ -263,7 +263,7 @@ class QuickHomeAway( EcobeeApplication ):
             data = self.sensorReport( identifier )
             sensorClimate = 'away'
             for date, sensorData in data[ -3: ]:
-                occupied = sum( sensorData[ 'occupancy' ] )
+                occupied = sum( sensorData.get('occupancy',[])
                 if not occupied and ping_addr_found:
                     occupied += 1
 
